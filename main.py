@@ -4,10 +4,13 @@ import json
 from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, Router, types
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
 from special_parsing_class import DualKeyDict
 import asyncio
+
 
 API_TOKEN = '7865333406:AAH24rbw85Y4qmCSrsGGNlEkfP5cRFN5ZmI'
 JSON_FILE = 'user_data.json'
@@ -15,6 +18,7 @@ JSON_FILE = 'user_data.json'
 # Инициализация бота и диспетчера
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
+storage = MemoryStorage() # для использования переменных между обрабработчиками
 router = Router()
 dp.include_router(router)
 
@@ -30,6 +34,7 @@ auth_user_button = KeyboardButton(text='Авторизация по данным
 
 keyboard_builder = ReplyKeyboardBuilder()
 keyboard_builder.add(back_button).add(new_user_button).add(auth_user_button)
+keyboard_builder.adjust(2)
 main_menu = keyboard_builder.as_markup(resize_keyboard=True)
 
 def load_user_data():
@@ -45,6 +50,30 @@ def save_user_data(data):
         json.dump(data, file)
 
 
+def paginate_text(content):
+    chars_per_page = 4000
+    pages = []
+    current_page = ""
+    for line in content.split("\n"):
+        if len(current_page) + len(line) + 1 > chars_per_page:
+            pages.append(current_page)
+            current_page = line
+        else:
+            current_page += ("\n" if current_page else "") + line
+    if current_page:
+        pages.append(current_page)
+    return pages
+
+
+def get_pagination_keyboard(current_page, total_pages):
+    keyboard = []
+    if current_page > 1:
+        keyboard.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"page:{current_page - 1}"))
+    if current_page < total_pages:
+        keyboard.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"page:{current_page + 1}"))
+    return InlineKeyboardMarkup(inline_keyboard=[keyboard])
+
+
 user_data = load_user_data()
 
 
@@ -55,6 +84,7 @@ async def send_welcome(message: types.Message):
         user_sessions[user_id] = {"username": "", "password": "", "payload": None, "courses_dict": None,
                                   "src_course": None, "section_course_dict": None, "session": requests.Session()}
     await message.reply("Привет! Выберите опцию ниже или введите логин:", reply_markup=main_menu)
+
 
 
 @router.message(lambda message: message.text == 'Новый пользователь')
@@ -156,7 +186,7 @@ async def display_courses(message: types.Message, response):
 
 
 @router.message(lambda message: user_sessions[str(message.from_user.id)]["courses_dict"])
-async def choose_course(message: types.Message):
+async def choose_course(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
     string_course = message.text
 
@@ -181,6 +211,7 @@ async def choose_course(message: types.Message):
             reply_markup=main_menu)
         return
 
+
     # Парсинг секций в курсе
     in_courses = user_sessions[user_id]["session"].post(user_sessions[user_id]["src_course"],
                                                         data=user_sessions[user_id]["payload"])
@@ -190,17 +221,42 @@ async def choose_course(message: types.Message):
     # Создание словаря с секциями и содержимым секций
     user_sessions[user_id]["section_course_dict"] = DualKeyDict()
     count = 1
+    course_content = ''
     for section in section_course:
         key_section = section.find("span", class_="hidden sectionname").text
-        material = DualKeyDict()
-        count2 = 1
+        count2 = 0
+        course_content += "\n\n"
         for item in section.find_all(class_="activityinstance"):
             instancename = item.find(class_="instancename").text
             link = item.find("a").get("href")
-            material[(str(count2), instancename)] = link
             count2 += 1
-        user_sessions[user_id]["section_course_dict"][(str(count), key_section)] = material
+            course_content += f"{count2}. {instancename}. {link}\n"
         count += 1
+    pages = paginate_text(course_content)
+    await state.update_data(pages=pages)  # Сохраняем страницы в состоянии пользователя
+
+    total_pages = len(pages)
+    current_page = 1
+
+    text = pages[current_page - 1]
+    keyboard = get_pagination_keyboard(current_page, total_pages)
+
+    await message.answer(text, reply_markup=keyboard)
+
+
+# Обработчик для нажатий на кнопки пагинации
+@router.callback_query(lambda c: c.data and c.data.startswith("page:"))
+async def handle_pagination(callback_query: types.CallbackQuery, state: FSMContext):
+    content = await state.get_data()
+    pages = content.get("pages")
+    current_page = int(callback_query.data.split(":")[1])
+    total_pages = len(pages)
+
+    text = pages[current_page - 1]
+    keyboard = get_pagination_keyboard(current_page, total_pages)
+
+    await callback_query.message.edit_text(text, reply_markup=keyboard)
+
 
 async def main():
     await dp.start_polling(bot)

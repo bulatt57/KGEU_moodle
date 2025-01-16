@@ -31,3 +31,6 @@ class DualKeyDict:
     def get_keys(self):
         keys_list = [".".join(keys) for keys in self._store.keys()]
         return "\n".join(keys_list)
+
+    def __len__(self):
+        return len(self._store)
