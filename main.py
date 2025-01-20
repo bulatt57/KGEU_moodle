@@ -270,7 +270,7 @@ async def choose_course(message: types.Message, state: FSMContext):
     await message.answer('Содержимое курса:')
     await message.answer(text, reply_markup=keyboard)
     await message.answer('Выберите опцию ниже для продолжения:')
-    await state.clear()
+    await state.set_state(None)
 
 
 # Обработчик для нажатий на кнопки пагинации
@@ -301,7 +301,7 @@ async def process_course_name(message: types.Message, state: FSMContext):
     response = user_sessions[user_id]["session"].post(login_url, data=user_sessions[user_id]["payload"])
     await message.reply(f"Вы ввели название курса: {course_name}")
     # Булат, пиши здесь регистрацию на курс
-    await state.clear()
+    await state.set_state(None)
 
 
 async def main():
