@@ -7,6 +7,7 @@ from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from special_parsing_class import DualKeyDict
 import asyncio
@@ -31,11 +32,9 @@ login_url = "https://lms.kgeu.ru/login/index.php"
 back_button = KeyboardButton(text='Назад')
 new_user_button = KeyboardButton(text='Новый пользователь')
 auth_user_button = KeyboardButton(text='Авторизация по данным')
+parse_course_button = KeyboardButton(text="Перейти к курсу")
+new_course_registration_button = KeyboardButton(text='Регистрация на курс')
 
-keyboard_builder = ReplyKeyboardBuilder()
-keyboard_builder.add(back_button).add(new_user_button).add(auth_user_button)
-keyboard_builder.adjust(2)
-main_menu = keyboard_builder.as_markup(resize_keyboard=True)
 
 def load_user_data():
     try:
@@ -77,13 +76,24 @@ def get_pagination_keyboard(current_page, total_pages):
 user_data = load_user_data()
 
 
+class CourseRegistrationForm(StatesGroup):
+    waiting_for_course_name_to_registration = State()
+
+class CourseParsingForm(StatesGroup):
+    waiting_for_course_name_to_parse = State()
+
+
 @router.message(Command("start"))
 async def send_welcome(message: types.Message):
     user_id = str(message.from_user.id)
     if user_id not in user_sessions:
         user_sessions[user_id] = {"username": "", "password": "", "payload": None, "courses_dict": None,
-                                  "src_course": None, "section_course_dict": None, "session": requests.Session()}
-    await message.reply("Привет! Выберите опцию ниже или введите логин:", reply_markup=main_menu)
+                                  "src_course": None, "section_course_dict": None, "session": requests.Session(),
+                                  "keyboard": [new_user_button, auth_user_button]}
+    keyboard_builder = ReplyKeyboardBuilder()
+    keyboard_builder.add(*user_sessions[user_id]["keyboard"])
+    main_keyboard = keyboard_builder.as_markup(resize_keyboard=True)
+    await message.reply("Привет! Выберите опцию ниже или введите логин:", reply_markup=main_keyboard)
 
 
 
@@ -91,7 +101,8 @@ async def send_welcome(message: types.Message):
 async def new_user(message: types.Message):
     user_id = str(message.from_user.id)
     user_sessions[user_id] = {"username": "", "password": "", "payload": None, "courses_dict": None, "src_course": None,
-                              "section_course_dict": None, "session": requests.Session()}
+                              "section_course_dict": None, "session": requests.Session(),
+                              "keyboard": [new_user_button, auth_user_button]}
     await message.reply("Введите ваш логин:")
 
 
@@ -101,13 +112,13 @@ async def auth_by_data(message: types.Message):
     if user_id in user_data:
         user_sessions[user_id] = {"username": user_data[user_id]['username'],
                                   "password": user_data[user_id]['password'], "payload": None, "courses_dict": None,
-                                  "src_course": None, "section_course_dict": None, "session": requests.Session()}
+                                  "src_course": None, "section_course_dict": None, "session": requests.Session(),
+                                  "keyboard": [new_user_button, auth_user_button]}
         await message.reply("Данные найдены. Авторизуюсь на сайте...")
         await authenticate_user(message)
     else:
         await message.reply(
-            "Данные для авторизации не найдены. Пожалуйста, создайте нового пользователя или введите логин и пароль.",
-            reply_markup=main_menu)
+            "Данные для авторизации не найдены. Пожалуйста, создайте нового пользователя или введите логин и пароль.",)
 
 
 async def authenticate_user(message: types.Message):
@@ -134,8 +145,17 @@ async def authenticate_user(message: types.Message):
         user_data[user_id] = {'username': user_sessions[user_id]["username"],
                               'password': user_sessions[user_id]["password"]}
         save_user_data(user_data)
-
-        await message.reply('Успешная авторизация')
+        if back_button not in user_sessions[user_id]["keyboard"]:
+            user_sessions[user_id]["keyboard"].append(back_button)
+        if parse_course_button not in user_sessions[user_id]["keyboard"]:
+            user_sessions[user_id]["keyboard"].append(parse_course_button)
+        if new_course_registration_button not in user_sessions[user_id]["keyboard"]:
+            user_sessions[user_id]["keyboard"].append(new_course_registration_button)
+        keyboard_builder = ReplyKeyboardBuilder()
+        keyboard_builder.add(*user_sessions[user_id]["keyboard"])
+        keyboard_builder.adjust(3)
+        main_keyboard = keyboard_builder.as_markup(resize_keyboard=True)
+        await message.reply('Успешная авторизация', reply_markup=main_keyboard)
         await display_courses(message, response)
     else:
         await message.reply(
@@ -146,8 +166,11 @@ async def authenticate_user(message: types.Message):
 async def reset_bot(message: types.Message):
     user_id = str(message.from_user.id)
     user_sessions[user_id] = {"username": "", "password": "", "payload": None, "courses_dict": None, "src_course": None,
-                              "section_course_dict": None, "session": requests.Session()}
-    await message.reply("Бот сброшен. Введите ваш логин или выберите опцию ниже:", reply_markup=main_menu)
+                              "section_course_dict": None, "session": requests.Session(), "keyboard": [new_user_button, auth_user_button]}
+    keyboard_builder = ReplyKeyboardBuilder()
+    keyboard_builder.add(*user_sessions[user_id]["keyboard"])
+    main_keyboard = keyboard_builder.as_markup(resize_keyboard=True)
+    await message.reply("Бот сброшен. Введите ваш логин или выберите опцию ниже:", reply_markup=main_keyboard)
 
 
 @router.message(lambda message: not user_sessions[str(message.from_user.id)]["username"])
@@ -181,11 +204,16 @@ async def display_courses(message: types.Message, response):
     course_list = "\n".join(course_name[0] if isinstance(course_name, tuple) else course_name for course_name in
                             user_sessions[user_id]["courses_dict"]._store.keys())
     await message.reply(
-        f"Вот список доступных курсов:\n\n{course_list}\n\nВведите название курса или ключевое слово, чтобы перейти к нему (или 'Назад' для возврата):",
-        reply_markup=main_menu)
+        f"Вот список доступных курсов:\n\n{course_list}\n\nВыберите опцию ниже для продолжения:")
 
 
-@router.message(lambda message: user_sessions[str(message.from_user.id)]["courses_dict"])
+@router.message(lambda message: message.text == 'Перейти к курсу')
+async def new_user(message: types.Message, state: FSMContext):
+    await message.reply("Введите название курса или ключевое слово, чтобы перейти к нему (или 'Назад' для возврата):")
+    await state.set_state(CourseParsingForm.waiting_for_course_name_to_parse)
+
+
+@router.message(lambda message: user_sessions[str(message.from_user.id)]["courses_dict"], CourseParsingForm.waiting_for_course_name_to_parse)
 async def choose_course(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
     string_course = message.text
@@ -202,13 +230,13 @@ async def choose_course(message: types.Message, state: FSMContext):
     elif len(matched_courses) > 1:
         matched_list = "\n".join(course[0] if isinstance(course, tuple) else course for course in matched_courses)
         await message.reply(
-            f"Найдено несколько курсов с подобным названием:\n\n{matched_list}\n\nУточните название или выберите из списка (или 'Назад' для возврата):",
-            reply_markup=main_menu)
+            f"Найдено несколько курсов с подобным названием:\n\n{matched_list}\n\n"
+            f"Уточните название или выберите из списка (или 'Назад' для возврата):",)
         return
     else:
         await message.reply(
-            f'Курс, содержащий в названии "{string_course}", не найден. Попробуйте еще раз (или введите "Назад" для возврата):',
-            reply_markup=main_menu)
+            f'Курс, содержащий в названии "{string_course}", не найден. '
+            f'Попробуйте еще раз (или введите "Назад" для возврата):',)
         return
 
 
@@ -223,7 +251,6 @@ async def choose_course(message: types.Message, state: FSMContext):
     count = 1
     course_content = ''
     for section in section_course:
-        key_section = section.find("span", class_="hidden sectionname").text
         count2 = 0
         course_content += "\n\n"
         for item in section.find_all(class_="activityinstance"):
@@ -240,8 +267,10 @@ async def choose_course(message: types.Message, state: FSMContext):
 
     text = pages[current_page - 1]
     keyboard = get_pagination_keyboard(current_page, total_pages)
-
+    await message.answer('Содержимое курса:')
     await message.answer(text, reply_markup=keyboard)
+    await message.answer('Выберите опцию ниже для продолжения:')
+    await state.clear()
 
 
 # Обработчик для нажатий на кнопки пагинации
@@ -256,6 +285,23 @@ async def handle_pagination(callback_query: types.CallbackQuery, state: FSMConte
     keyboard = get_pagination_keyboard(current_page, total_pages)
 
     await callback_query.message.edit_text(text, reply_markup=keyboard)
+
+
+# обработчик нажатия на кнопку регистрации на новый курс
+@router.message(lambda message: message.text == 'Регистрация на курс')
+async def new_user(message: types.Message, state: FSMContext):
+    await message.reply("Введите название или id курса на который необходимо зарегестрироваться")
+    await state.set_state(CourseRegistrationForm.waiting_for_course_name_to_registration)
+
+# обработчик ввода курса на который необходимо зарегестрироваться
+@router.message(CourseRegistrationForm.waiting_for_course_name_to_registration)
+async def process_course_name(message: types.Message, state: FSMContext):
+    course_name = message.text
+    user_id = str(message.from_user.id)
+    response = user_sessions[user_id]["session"].post(login_url, data=user_sessions[user_id]["payload"])
+    await message.reply(f"Вы ввели название курса: {course_name}")
+    # Булат, пиши здесь регистрацию на курс
+    await state.clear()
 
 
 async def main():
