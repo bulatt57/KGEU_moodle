@@ -33,7 +33,7 @@ back_button = KeyboardButton(text='Назад')
 new_user_button = KeyboardButton(text='Новый пользователь')
 auth_user_button = KeyboardButton(text='Авторизация по данным')
 parse_course_button = KeyboardButton(text="Перейти к курсу")
-new_course_registration_button = KeyboardButton(text='Регистрация на курс')
+new_course_registration_button = KeyboardButton(text='Регистрация на новый курс moodle')
 
 
 def load_user_data():
@@ -309,3 +309,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+#     Azat тут 123
