@@ -4,6 +4,7 @@ FROM python:3.9-slim
 # Установим зависимости для работы с Git и другими инструментами
 RUN apt-get update && apt-get install -y \
     git \
+    ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
