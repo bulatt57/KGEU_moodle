@@ -4,10 +4,11 @@ FROM python:3.9-slim
 # Установим зависимости для работы с Git и другими инструментами
 RUN apt-get update && apt-get install -y \
     git \
+    ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Установим необходимые библиотеки Python, включая aiogram версии ниже 3.0
+# Установим необходимые библиотеки Python
 RUN pip install --no-cache-dir aiogram requests beautifulsoup4 lxml
 
 # Клонируем ваш репозиторий через HTTPS

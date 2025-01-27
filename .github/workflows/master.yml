@@ -1,0 +1,27 @@
+name: Master
+on: push
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      # 1. Проверяем репозиторий
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      # 2. Устанавливаем Docker (если не установлен)
+      - name: Install Docker (Optional)
+        if: runner.os != 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker.io
+
+      # 3. Сборка Docker-образа
+      - name: Build Docker Image
+        run: docker build -t telegram-bot .
+
+      # 4. Запуск контейнера
+      - name: Run Docker Container
+        run: |
+          docker run -d --name telegram-bot \
+          --restart unless-stopped \
+          telegram-bot
