@@ -12,43 +12,35 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from special_parsing_class import DualKeyDict
 import asyncio
 
-
 API_TOKEN = '7865333406:AAH24rbw85Y4qmCSrsGGNlEkfP5cRFN5ZmI'
 JSON_FILE = 'user_data.json'
 
-# Инициализация бота и диспетчера
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
-storage = MemoryStorage() # для использования переменных между обрабработчиками
+storage = MemoryStorage()
 router = Router()
 dp.include_router(router)
 
-# Словарь для хранения сессий пользователей
 user_sessions = {}
-
 login_url = "https://lms.kgeu.ru/login/index.php"
 search_url = "https://lms.kgeu.ru/course/search.php?search="
 
-# Создание кнопок и клавиатуры
 back_button = KeyboardButton(text='Назад')
 new_user_button = KeyboardButton(text='Новый пользователь')
 auth_user_button = KeyboardButton(text='Авторизация по данным')
-parse_course_button = KeyboardButton(text="Перейти к курсу")
+my_courses_button = KeyboardButton(text="Мои курсы")
 new_course_registration_button = KeyboardButton(text='Регистрация на новый курс moodle')
-
 
 def load_user_data():
     try:
         with open(JSON_FILE, 'r') as file:
             return json.load(file)
-    except FileNotFoundError:
+    except (FileNotFoundError, json.JSONDecodeError):
         return {}
-
 
 def save_user_data(data):
     with open(JSON_FILE, 'w') as file:
-        json.dump(data, file)
-
+        json.dump(data, file, indent=2)
 
 def paginate_text(content):
     chars_per_page = 4000
@@ -64,7 +56,6 @@ def paginate_text(content):
         pages.append(current_page)
     return pages
 
-
 def get_pagination_keyboard(current_page, total_pages):
     keyboard = []
     if current_page > 1:
@@ -73,211 +64,163 @@ def get_pagination_keyboard(current_page, total_pages):
         keyboard.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"page:{current_page + 1}"))
     return InlineKeyboardMarkup(inline_keyboard=[keyboard])
 
-
-user_data = load_user_data()
-
-
 class CourseFindForm(StatesGroup):
     waiting_for_course_name_to_find = State()
 
 class CourseParsingForm(StatesGroup):
     waiting_for_course_name_to_parse = State()
+    waiting_course_selection = State()
 
 class CourseRegistrationForm(StatesGroup):
-    waiting_for_course_count_to_registration = State()
+    waiting_for_course_name_or_id = State()
+    waiting_for_course_selection = State()
+    waiting_confirmation = State()
 
 @router.message(Command("start"))
 async def send_welcome(message: types.Message):
     user_id = str(message.from_user.id)
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"username": "", "password": "", "payload": None, "courses_dict": None,
-                                  "src_course": None, "section_course_dict": None, "session": requests.Session(),
-                                  "keyboard": [new_user_button, auth_user_button]}
-    keyboard_builder = ReplyKeyboardBuilder()
-    keyboard_builder.add(*user_sessions[user_id]["keyboard"])
-    main_keyboard = keyboard_builder.as_markup(resize_keyboard=True)
-    await message.reply("Привет! Выберите опцию ниже или введите логин:", reply_markup=main_keyboard)
-
-
+        user_sessions[user_id] = {
+            "username": "", "password": "", "payload": None,
+            "courses_dict": None, "src_course": None,
+            "section_course_dict": None, "session": requests.Session(),
+            "keyboard": [new_user_button, auth_user_button]
+        }
+    builder = ReplyKeyboardBuilder()
+    builder.add(*user_sessions[user_id]["keyboard"])
+    await message.answer("Привет! Выберите опцию:", reply_markup=builder.as_markup(resize_keyboard=True))
 
 @router.message(lambda message: message.text == 'Новый пользователь')
-async def new_user(message: types.Message):
+async def handle_new_user(message: types.Message):
     user_id = str(message.from_user.id)
-    user_sessions[user_id] = {"username": "", "password": "", "payload": None, "courses_dict": None, "src_course": None,
-                              "section_course_dict": None, "session": requests.Session(),
-                              "keyboard": [new_user_button, auth_user_button]}
-    await message.reply("Введите ваш логин:")
-
+    user_sessions[user_id] = {
+        "username": "", "password": "", "payload": None,
+        "courses_dict": None, "src_course": None,
+        "section_course_dict": None, "session": requests.Session(),
+        "keyboard": [back_button]
+    }
+    await message.answer("Введите логин Moodle:")
 
 @router.message(lambda message: message.text == 'Авторизация по данным')
-async def auth_by_data(message: types.Message):
+async def handle_auth(message: types.Message):
     user_id = str(message.from_user.id)
+    user_data = load_user_data()
     if user_id in user_data:
-        user_sessions[user_id] = {"username": user_data[user_id]['username'],
-                                  "password": user_data[user_id]['password'], "payload": None, "courses_dict": None,
-                                  "src_course": None, "section_course_dict": None, "session": requests.Session(),
-                                  "keyboard": [new_user_button, auth_user_button]}
-        await message.reply("Данные найдены. Авторизуюсь на сайте...")
-        await authenticate_user(message)
+        try:
+            session = requests.Session()
+            login_page = session.get(login_url)
+            soup = BeautifulSoup(login_page.content, 'html.parser')
+            logintoken = soup.find('input', {'name': 'logintoken'})['value']
+
+            payload = {
+                'username': user_data[user_id]['username'],
+                'password': user_data[user_id]['password'],
+                'logintoken': logintoken
+            }
+
+            response = session.post(login_url, data=payload)
+            if "Выход" in response.text:
+                user_sessions[user_id] = {
+                    "username": user_data[user_id]['username'],
+                    "password": user_data[user_id]['password'],
+                    "payload": payload,
+                    "session": session,
+                    "keyboard": [back_button, my_courses_button, new_course_registration_button]
+                }
+                await message.answer("✅ Авторизация успешна!")
+                await show_main_menu(message)
+            else:
+                await message.answer("❌ Ошибка авторизации. Проверьте данные.")
+        except Exception as e:
+            await message.answer(f"⚠️ Ошибка: {str(e)}")
     else:
-        await message.reply(
-            "Данные для авторизации не найдены. Пожалуйста, создайте нового пользователя или введите логин и пароль.",)
+        await message.answer("🔍 Данные для авторизации не найдены.")
 
-
-async def authenticate_user(message: types.Message):
+async def show_main_menu(message: types.Message):
     user_id = str(message.from_user.id)
+    builder = ReplyKeyboardBuilder()
+    builder.add(*user_sessions[user_id]["keyboard"])
+    await message.answer("Выберите действие:", reply_markup=builder.as_markup(resize_keyboard=True))
 
-    # Получение страницы входа для извлечения токена
-    login_page = user_sessions[user_id]["session"].get(login_url)
-    login_soup = BeautifulSoup(login_page.content, 'html.parser')
-    logintoken = login_soup.find('input', {'name': 'logintoken'})['value']
-
-    # Данные авторизации
-    user_sessions[user_id]["payload"] = {
-        'username': user_sessions[user_id]["username"],
-        'password': user_sessions[user_id]["password"],
-        'logintoken': logintoken
-    }
-
-    # Авторизация
-    response = user_sessions[user_id]["session"].post(login_url, data=user_sessions[user_id]["payload"])
-
-    # Проверка авторизации
-    if "Выход" in response.text:
-        # Сохранение данных в JSON-файл
-        user_data[user_id] = {'username': user_sessions[user_id]["username"],
-                              'password': user_sessions[user_id]["password"]}
-        save_user_data(user_data)
-        if back_button not in user_sessions[user_id]["keyboard"]:
-            user_sessions[user_id]["keyboard"].append(back_button)
-        if parse_course_button not in user_sessions[user_id]["keyboard"]:
-            user_sessions[user_id]["keyboard"].append(parse_course_button)
-        if new_course_registration_button not in user_sessions[user_id]["keyboard"]:
-            user_sessions[user_id]["keyboard"].append(new_course_registration_button)
-        keyboard_builder = ReplyKeyboardBuilder()
-        keyboard_builder.add(*user_sessions[user_id]["keyboard"])
-        keyboard_builder.adjust(3)
-        main_keyboard = keyboard_builder.as_markup(resize_keyboard=True)
-        await message.reply('Успешная авторизация', reply_markup=main_keyboard)
-        await display_courses(message, response)
-    else:
-        await message.reply(
-            'Не удалось авторизоваться. Пожалуйста, проверьте ваш логин и пароль или используйте команду /reset для перезапуска.')
-
-
-@router.message(Command("reset"))
-async def reset_bot(message: types.Message):
+@router.message(lambda message: message.text == 'Мои курсы')
+async def handle_my_courses(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
-    user_sessions[user_id] = {"username": "", "password": "", "payload": None, "courses_dict": None, "src_course": None,
-                              "section_course_dict": None, "session": requests.Session(), "keyboard": [new_user_button, auth_user_button]}
-    keyboard_builder = ReplyKeyboardBuilder()
-    keyboard_builder.add(*user_sessions[user_id]["keyboard"])
-    main_keyboard = keyboard_builder.as_markup(resize_keyboard=True)
-    await message.reply("Бот сброшен. Введите ваш логин или выберите опцию ниже:", reply_markup=main_keyboard)
+    url = "https://lms.kgeu.ru/"
+    try:
+        response = user_sessions[user_id]["session"].post(url, data=user_sessions[user_id]["payload"])
+        soup = BeautifulSoup(response.text, "lxml")
+
+        courses = soup.find_all("div", class_=re.compile("coursebox clearfix"))
+
+        user_sessions[user_id]["courses_dict"] = DualKeyDict()
+        course_order = []
+        for course in courses:
+            course_name_element = course.find(class_=re.compile(r'coursename'))
+            if course_name_element:
+                course_link = course_name_element.find('a')
+                if course_link:
+                    course_name = course_link.text.strip()
+                    course_url = course_link.get('href')
+                    user_sessions[user_id]["courses_dict"][course_name] = course_url
+                    course_order.append(course_name)
 
 
-@router.message(lambda message: not user_sessions[str(message.from_user.id)]["username"])
-async def get_username(message: types.Message):
+        if not course_order:
+            await message.answer("📭 У вас нет активных курсов")
+            return
+
+        await state.update_data(course_order=course_order)
+        course_list = "\n".join([f"{idx}. {name}" for idx, name in enumerate(course_order, 1)])
+        await message.answer(f"📚 Ваши курсы:\n{course_list}\n🔢 Введите номер курса для просмотра:")
+        await state.set_state(CourseParsingForm.waiting_course_selection)
+
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка: {str(e)}")
+
+@router.message(CourseParsingForm.waiting_course_selection)
+async def process_course_selection(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
-    user_sessions[user_id]["username"] = message.text
-    await message.reply("Спасибо! Теперь введите ваш пароль:")
+    try:
+        data = await state.get_data()
+        course_order = data.get("course_order", [])
+        choice = int(message.text) - 1
 
+        if 0 <= choice < len(course_order):
+            course_name = course_order[choice]
+            course_url = user_sessions[user_id]["courses_dict"][course_name]
+            session = user_sessions[user_id]["session"]
+            response = session.get(course_url)
+            soup = BeautifulSoup(response.text, 'html.parser')
 
-@router.message(lambda message: not user_sessions[str(message.from_user.id)]["password"])
-async def get_password(message: types.Message):
-    user_id = str(message.from_user.id)
-    user_sessions[user_id]["password"] = message.text
-    await message.reply("Спасибо! Авторизуюсь на сайте...")
+            content = ""
+            sections = soup.find_all('li', class_='section main clearfix')
+            for section in sections:
+                activities = section.find_all(class_='activityinstance')
+                for act in activities:
+                    title = act.find(class_='instancename').text
+                    link = act.find('a')['href']
+                    link = f"{link}?sesskey={session.cookies.get('MoodleSession')}"
+                    content += f"🔗 {title}: {link}\n"
 
-    await authenticate_user(message)
+            pages = paginate_text(content)
+            await state.update_data(pages=pages)  # Сохраняем страницы в состоянии пользователя
 
+            total_pages = len(pages)
+            current_page = 1
 
-async def display_courses(message: types.Message, response):
-    user_id = str(message.from_user.id)
-    soup = BeautifulSoup(response.text, "lxml")
-    courses = soup.find_all("div", class_=re.compile("coursebox clearfix"))
+            text = pages[current_page - 1]
+            keyboard = get_pagination_keyboard(current_page, total_pages)
+            await message.answer(text, reply_markup=keyboard)
+        else:
+            await message.answer("❌ Неверный номер курса")
 
-    # Создание словаря с курсами и названиями
-    user_sessions[user_id]["courses_dict"] = DualKeyDict()
-    for course in courses:
-        course_name = course.find(class_=re.compile("coursename")).find('a').text
-        course_url = course.find(class_=re.compile("coursename")).find('a').get("href")
-        user_sessions[user_id]["courses_dict"][course_name] = course_url
-
-    course_list = "\n".join(course_name[0] if isinstance(course_name, tuple) else course_name for course_name in
-                            user_sessions[user_id]["courses_dict"]._store.keys())
-    await message.reply(
-        f"Вот список доступных курсов:\n\n{course_list}\n\nВыберите опцию ниже для продолжения:")
-
-
-@router.message(lambda message: message.text == 'Перейти к курсу')
-async def new_user(message: types.Message, state: FSMContext):
-    await message.reply("Введите название курса или ключевое слово, чтобы перейти к нему (или 'Назад' для возврата):")
-    await state.set_state(CourseParsingForm.waiting_for_course_name_to_parse)
-
-
-@router.message(lambda message: user_sessions[str(message.from_user.id)]["courses_dict"],
-                CourseParsingForm.waiting_for_course_name_to_parse)
-async def choose_course(message: types.Message, state: FSMContext):
+    except ValueError:
+        await message.answer("🔢 Пожалуйста, введите число!")
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка: {str(e)}")
     await state.set_state(None)
-    user_id = str(message.from_user.id)
-    string_course = message.text
-
-    if string_course.lower() == 'назад':
-        await send_welcome(message)
-        return
-
-    matched_courses = [name for name in user_sessions[user_id]["courses_dict"]._store.keys() if
-                       string_course in name[0]]
-
-    if len(matched_courses) == 1:
-        user_sessions[user_id]["src_course"] = user_sessions[user_id]["courses_dict"][matched_courses[0]]
-    elif len(matched_courses) > 1:
-        matched_list = "\n".join(course[0] if isinstance(course, tuple) else course for course in matched_courses)
-        await message.reply(
-            f"Найдено несколько курсов с подобным названием:\n\n{matched_list}\n\n"
-            f"Уточните название или выберите из списка (или 'Назад' для возврата):",)
-        return
-    else:
-        await message.reply(
-            f'Курс, содержащий в названии "{string_course}", не найден. '
-            f'Попробуйте еще раз (или введите "Назад" для возврата):',)
-        return
 
 
-    # Парсинг секций в курсе
-    in_courses = user_sessions[user_id]["session"].post(user_sessions[user_id]["src_course"],
-                                                        data=user_sessions[user_id]["payload"])
-    soup = BeautifulSoup(in_courses.text, "lxml")
-    section_course = soup.find('ul', class_="topics").find_all('li', class_="section main clearfix")
-
-    # Создание словаря с секциями и содержимым секций
-    user_sessions[user_id]["section_course_dict"] = DualKeyDict()
-    count = 1
-    course_content = ''
-    for section in section_course:
-        count2 = 0
-        course_content += "\n\n"
-        for item in section.find_all(class_="activityinstance"):
-            instancename = item.find(class_="instancename").text
-            link = item.find("a").get("href")
-            count2 += 1
-            course_content += f"{count2}. {instancename}. {link}\n"
-        count += 1
-    pages = paginate_text(course_content)
-    await state.update_data(pages=pages)  # Сохраняем страницы в состоянии пользователя
-
-    total_pages = len(pages)
-    current_page = 1
-
-    text = pages[current_page - 1]
-    keyboard = get_pagination_keyboard(current_page, total_pages)
-    await message.answer('Содержимое курса:')
-    await message.answer(text, reply_markup=keyboard)
-    await message.answer('Выберите опцию ниже для продолжения:')
-
-
-# Обработчик для нажатий на кнопки пагинации
 @router.callback_query(lambda c: c.data and c.data.startswith("page:"))
 async def handle_pagination(callback_query: types.CallbackQuery, state: FSMContext):
     content = await state.get_data()
@@ -291,77 +234,175 @@ async def handle_pagination(callback_query: types.CallbackQuery, state: FSMConte
     await callback_query.message.edit_text(text, reply_markup=keyboard)
 
 
-# обработчик нажатия на кнопку регистрации на новый курс
-@router.message(lambda message: message.text == 'Регистрация на курс')
-async def new_user(message: types.Message, state: FSMContext):
-    await message.reply("Введите название или id курса на который необходимо зарегестрироваться")
-    await state.set_state(CourseFindForm.waiting_for_course_name_to_find)
+async def check_enrollment(session, course_url):
+    response = session.get("https://lms.kgeu.ru/my/")
+    soup = BeautifulSoup(response.text, 'html.parser')
+    courses = soup.find_all('div', class_='coursebox')
+    for course in courses:
+        url = course.find('a')['href']
+        if url == course_url:
+            return True
+    return False
 
-# обработчик ввода курса на который необходимо зарегестрироваться
-@router.message(CourseFindForm.waiting_for_course_name_to_find)
-async def process_course_name(message: types.Message, state: FSMContext):
-    await state.set_state(None)
-    s = ''
-    course_name = message.text
+@router.message(lambda message: message.text == 'Регистрация на новый курс moodle')
+async def handle_course_registration(message: types.Message, state: FSMContext):
+    await message.answer("🔍 Введите название курса или его ID для поиска:")
+    await state.set_state(CourseRegistrationForm.waiting_for_course_name_or_id)
+
+@router.message(CourseRegistrationForm.waiting_for_course_name_or_id)
+async def process_course_registration(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
-    await message.reply(f"Вы ввели название курса: {course_name}")
-    searching_url = search_url + course_name.replace(' ', '+')
-    response = user_sessions[user_id]["session"].post(searching_url, data=user_sessions[user_id]["payload"])
-    soup = BeautifulSoup(response.text, "lxml")
-    found_courses = soup.find_all("div", class_=re.compile("coursebox clearfix"))
-    # сохраняем названия найденных курсов в стейт
-    await state.update_data(found_courses=found_courses)
-    if len(found_courses) > 1:
-        counter = 0
-        for course in found_courses:
-            counter += 1
+    user_input = message.text.strip()
+
+    if user_input.lower() == 'назад':
+        await show_main_menu(message)
+        await state.clear()
+        return
+
+    try:
+        session = user_sessions[user_id]["session"]
+        payload = user_sessions[user_id]["payload"]
+
+        if user_input.isdigit():
+            course_id = user_input
+            course_url = f"https://lms.kgeu.ru/course/view.php?id={course_id}"
+            response = session.get(course_url)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                course_name = soup.find('h1').text.strip() if soup.find('h1') else f"Курс с ID {course_id}"
+                await state.update_data(course_url=course_url, course_name=course_name)
+                await ask_for_enrollment(message, state)
+            else:
+                await message.answer("❌ Курс с таким ID не найден.")
+                await state.clear()
+            return
+
+        search_response = session.get(f"{search_url}{user_input}")
+        soup = BeautifulSoup(search_response.text, 'html.parser')
+        courses = soup.find_all('div', class_='coursebox')
+
+        if not courses:
+            await message.answer("❌ Курсы не найдены.")
+            await state.clear()
+            return
+
+        if len(courses) == 1:
+            course_name = courses[0].find(class_=re.compile("coursename")).find('a').text
+            course_url = courses[0].find(class_=re.compile("coursename")).find('a').get("href")
+            await state.update_data(course_url=course_url, course_name=course_name)
+            await ask_for_enrollment(message, state)
+            return
+
+        course_list = []
+        for idx, course in enumerate(courses, 1):
             course_name = course.find(class_=re.compile("coursename")).find('a').text
-            s += f"{counter}) {course_name}\n"
-        await message.reply(f"Найдены курсы:\n{s}Уточните на какой курс необходимо записаться (введите число):")
-        await state.set_state(CourseRegistrationForm.waiting_for_course_count_to_registration)
-    elif len(found_courses) == 0:
-        await message.reply(f"Курса с таким названием не существует! Попробуйте еще раз.")
-        await state.set_state(CourseFindForm.waiting_for_course_name_to_find)
-    elif len(found_courses) == 1:
-        course_name = found_courses[0].find(class_=re.compile("coursename")).find('a').text
-        button_yes = InlineKeyboardButton(text='Да', callback_data='yes')
-        button_no = InlineKeyboardButton(text='Нет', callback_data='no')
-        accept_keyboard = InlineKeyboardMarkup(inline_keyboard=[[button_yes, button_no]])
-        await message.answer(f"Вы хотите записаться на курс '{course_name}'?", reply_markup=accept_keyboard)
+            course_url = course.find(class_=re.compile("coursename")).find('a').get("href")
+            course_list.append((idx, course_name, course_url))
 
+        await state.update_data(course_list=course_list)
+        courses_text = "\n".join([f"{idx}. {name}" for idx, name, _ in course_list])
+        await message.answer(f"📚 Найдено несколько курсов:\n{courses_text}\n🔢 Введите номер курса для записи:")
+        await state.set_state(CourseRegistrationForm.waiting_for_course_selection)
 
-@dp.callback_query()
-async def process_callback(callback: types.CallbackQuery, state: FSMContext):
-    if callback.data == "yes":
-        content = await state.get_data()
-        # Вытаскиваем инфу про найденный курс
-        course_name = content.get("found_courses")[0]
-        # url курса на который нужно записаться
-        course_url = course_name.find(class_=re.compile("coursename")).find('a').get("href")
-        # Не понимаю как нажимать на кнопку записи на курс
-        await callback.message.answer(course_url)
-    elif callback.data == "nos":
-        await callback.message.answer("Отмена")
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка: {str(e)}")
+        await state.clear()
 
-@router.message(CourseRegistrationForm.waiting_for_course_count_to_registration)
-async def process_course_name(message: types.Message, state: FSMContext):
-    await state.set_state(None)
-    confirm = message.text
-    if confirm.isdigit():
-        content = await state.get_data()
-        # Вытаскиваем инфу про найденный курс
-        found_courses = content.get("found_courses")
-        # url курса на который нужно записаться
-        course_url = found_courses[int(confirm)-1].find(class_=re.compile("coursename")).find('a').get("href")
-        # Не понимаю как нажимать на кнопку записи на курс
-        await message.answer(course_url)
+@router.message(CourseRegistrationForm.waiting_for_course_selection)
+async def process_course_selection(message: types.Message, state: FSMContext):
+    user_id = str(message.from_user.id)
+    user_input = message.text.strip()
+
+    if user_input.lower() == 'назад':
+        await show_main_menu(message)
+        await state.clear()
+        return
+
+    try:
+        data = await state.get_data()
+        course_list = data.get("course_list", [])
+
+        if not course_list:
+            await message.answer("❌ Ошибка: список курсов пуст.")
+            await state.clear()
+            return
+
+        try:
+            selection = int(user_input)
+            if 1 <= selection <= len(course_list):
+                _, course_name, course_url = course_list[selection - 1]
+                await state.update_data(course_url=course_url, course_name=course_name)
+                await ask_for_enrollment(message, state)
+            else:
+                await message.answer("❌ Неверный номер курса. Попробуйте снова.")
+        except ValueError:
+            await message.answer("🔢 Пожалуйста, введите номер курса цифрами.")
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка: {str(e)}")
+        await state.clear()
+
+async def ask_for_enrollment(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    course_name = data.get("course_name", "курс")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да", callback_data="enroll_yes")],
+        [InlineKeyboardButton(text="❌ Нет", callback_data="enroll_no")]
+    ])
+    await message.answer(f"📝 Вы хотите записаться на курс «{course_name}»?", reply_markup=keyboard)
+    await state.set_state(CourseRegistrationForm.waiting_confirmation)
+
+@router.callback_query(lambda c: c.data in ["enroll_yes", "enroll_no"])
+async def handle_enrollment_decision(callback_query: types.CallbackQuery, state: FSMContext):
+    user_id = str(callback_query.from_user.id)
+    data = await state.get_data()
+    course_url = data.get("course_url")
+    course_name = data.get("course_name", "курс")
+
+    if callback_query.data == "enroll_yes":
+        try:
+            session = user_sessions[user_id]["session"]
+            course_page = session.get(course_url)
+            soup = BeautifulSoup(course_page.text, 'html.parser')
+
+            enroll_form = soup.find('form', {'action': re.compile(r'enrol/index\.php')})
+            if not enroll_form:
+                await callback_query.message.answer("❌ Не удалось найти форму записи на курс.")
+                return
+
+            form_action = enroll_form.get('action')
+            form_data = {}
+            for input_tag in enroll_form.find_all('input'):
+                input_name = input_tag.get('name')
+                input_value = input_tag.get('value')
+                if input_name:
+                    form_data[input_name] = input_value
+
+            enroll_url = f"https://lms.kgeu.ru{form_action}" if form_action.startswith('/') else form_action
+            response = session.post(enroll_url, data=form_data)
+
+            if response.status_code == 200:
+                if await check_enrollment(session, course_url): # Здесь баг какой то над пофиксить
+                    await callback_query.message.answer(f"✅ Вы успешно записаны на курс «{course_name}»!")
+                else:
+                    await callback_query.message.answer("❌ Не удалось записаться на курс. Попробуйте позже.")
+            else:
+                await callback_query.message.answer("⚠️ Ошибка при отправке запроса")
+
+        except Exception as e:
+            await callback_query.message.answer(f"⚠️ Ошибка: {str(e)}")
     else:
-        await message.reply(f"Введите число!")
-        await state.set_state(CourseRegistrationForm.waiting_for_course_count_to_registration)
+        await callback_query.message.answer("🚫 Запись на курс отменена.")
+
+    await state.clear()
+
+@router.message(Command("reset"))
+async def handle_reset(message: types.Message):
+    user_id = str(message.from_user.id)
+    user_sessions.pop(user_id, None)
+    await message.answer("🔄 Сессия сброшена. Используйте /start для начала.")
 
 async def main():
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
     asyncio.run(main())
-#     Azat тут 123
