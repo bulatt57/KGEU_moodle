@@ -145,15 +145,15 @@ async def show_main_menu(message: types.Message):
 @router.message(lambda message: message.text == 'Мои курсы')
 async def handle_my_courses(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
+    url = "https://lms.kgeu.ru/"
     try:
-        session = user_sessions[user_id]["session"]
-        response = session.get("https://lms.kgeu.ru/my/")
-        soup = BeautifulSoup(response.text, 'html.parser')
+        response = user_sessions[user_id]["session"].post(url, data=user_sessions[user_id]["payload"])
+        soup = BeautifulSoup(response.text, "lxml")
 
-        courses = soup.find_all('div', class_=re.compile(r'coursebox\b'))
+        courses = soup.find_all("div", class_=re.compile("coursebox clearfix"))
+
         user_sessions[user_id]["courses_dict"] = DualKeyDict()
         course_order = []
-
         for course in courses:
             course_name_element = course.find(class_=re.compile(r'coursename'))
             if course_name_element:
@@ -163,6 +163,7 @@ async def handle_my_courses(message: types.Message, state: FSMContext):
                     course_url = course_link.get('href')
                     user_sessions[user_id]["courses_dict"][course_name] = course_url
                     course_order.append(course_name)
+
 
         if not course_order:
             await message.answer("📭 У вас нет активных курсов")
@@ -202,9 +203,13 @@ async def process_course_selection(message: types.Message, state: FSMContext):
                     content += f"🔗 {title}: {link}\n"
 
             pages = paginate_text(content)
-            await state.update_data(pages=pages)
-            text = pages[0] if pages else "Нет содержимого для отображения."
-            keyboard = get_pagination_keyboard(1, len(pages)) if len(pages) > 1 else None
+            await state.update_data(pages=pages)  # Сохраняем страницы в состоянии пользователя
+
+            total_pages = len(pages)
+            current_page = 1
+
+            text = pages[current_page - 1]
+            keyboard = get_pagination_keyboard(current_page, total_pages)
             await message.answer(text, reply_markup=keyboard)
         else:
             await message.answer("❌ Неверный номер курса")
@@ -213,7 +218,21 @@ async def process_course_selection(message: types.Message, state: FSMContext):
         await message.answer("🔢 Пожалуйста, введите число!")
     except Exception as e:
         await message.answer(f"⚠️ Ошибка: {str(e)}")
-    await state.clear()
+    await state.set_state(None)
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("page:"))
+async def handle_pagination(callback_query: types.CallbackQuery, state: FSMContext):
+    content = await state.get_data()
+    pages = content.get("pages")
+    current_page = int(callback_query.data.split(":")[1])
+    total_pages = len(pages)
+
+    text = pages[current_page - 1]
+    keyboard = get_pagination_keyboard(current_page, total_pages)
+
+    await callback_query.message.edit_text(text, reply_markup=keyboard)
+
 
 async def check_enrollment(session, course_url):
     response = session.get("https://lms.kgeu.ru/my/")
@@ -362,7 +381,7 @@ async def handle_enrollment_decision(callback_query: types.CallbackQuery, state:
             response = session.post(enroll_url, data=form_data)
 
             if response.status_code == 200:
-                if await check_enrollment(session, course_url):
+                if await check_enrollment(session, course_url): # Здесь баг какой то над пофиксить
                     await callback_query.message.answer(f"✅ Вы успешно записаны на курс «{course_name}»!")
                 else:
                     await callback_query.message.answer("❌ Не удалось записаться на курс. Попробуйте позже.")
