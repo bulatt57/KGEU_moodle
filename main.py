@@ -76,6 +76,10 @@ class CourseRegistrationForm(StatesGroup):
     waiting_for_course_selection = State()
     waiting_confirmation = State()
 
+class UserAuthenticationForm(StatesGroup):
+    waiting_for_user_login = State()
+    waiting_for_user_password = State()
+
 @router.message(Command("start"))
 async def send_welcome(message: types.Message):
     user_id = str(message.from_user.id)
@@ -90,16 +94,79 @@ async def send_welcome(message: types.Message):
     builder.add(*user_sessions[user_id]["keyboard"])
     await message.answer("Привет! Выберите опцию:", reply_markup=builder.as_markup(resize_keyboard=True))
 
+
+async def authenticate_user(message: types.Message, user_data):
+    user_id = str(message.from_user.id)
+    session = requests.Session()
+    login_page = session.get(login_url)
+    soup = BeautifulSoup(login_page.content, 'html.parser')
+    logintoken = soup.find('input', {'name': 'logintoken'})['value']
+
+    payload = {
+        'username': user_data[user_id]['username'],
+        'password': user_data[user_id]['password'],
+        'logintoken': logintoken
+    }
+    # Данные авторизации
+    user_sessions[user_id]["payload"] = {
+        'username': user_sessions[user_id]["username"],
+        'password': user_sessions[user_id]["password"],
+        'logintoken': logintoken,
+    }
+
+    # Авторизация
+    response = session.post(login_url, data=payload)
+
+    # Проверка авторизации
+    if "Выход" in response.text:
+        user_sessions[user_id].update( {
+            "username": user_data[user_id]['username'],
+            "password": user_data[user_id]['password'],
+            "payload": payload,
+            "session": session,
+            "keyboard": [back_button, my_courses_button, new_course_registration_button]
+        })
+        if user_id not in load_user_data():
+            user_data[user_id] = {'username': user_sessions[user_id]["username"],
+                              'password': user_sessions[user_id]["password"]}
+            save_user_data(user_data)
+        await message.answer("✅ Авторизация успешна!")
+        await show_main_menu(message)
+    else:
+        await message.reply(
+            'Не удалось авторизоваться. Пожалуйста, проверьте ваш логин и пароль или используйте команду /reset для перезапуска.')
+
+
 @router.message(lambda message: message.text == 'Новый пользователь')
-async def handle_new_user(message: types.Message):
+async def handle_new_user(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
     user_sessions[user_id] = {
         "username": "", "password": "", "payload": None,
         "courses_dict": None, "src_course": None,
         "section_course_dict": None, "session": requests.Session(),
-        "keyboard": [back_button]
+        "keyboard": [new_user_button, auth_user_button]
     }
     await message.answer("Введите логин Moodle:")
+    await state.set_state(UserAuthenticationForm.waiting_for_user_login)
+
+
+@router.message(UserAuthenticationForm.waiting_for_user_login)
+async def get_username(message: types.Message, state: FSMContext):
+    user_id = str(message.from_user.id)
+    user_sessions[user_id]["username"] = message.text
+    await message.reply("Спасибо! Теперь введите ваш пароль:")
+    await state.clear()
+    await state.set_state(UserAuthenticationForm.waiting_for_user_password)
+
+
+@router.message(UserAuthenticationForm.waiting_for_user_password)
+async def get_password(message: types.Message, state: FSMContext):
+    user_id = str(message.from_user.id)
+    user_sessions[user_id]["password"] = message.text
+    await message.reply("Спасибо! Авторизуюсь на сайте...")
+    await state.clear()
+    await authenticate_user(message, user_sessions)
+
 
 @router.message(lambda message: message.text == 'Авторизация по данным')
 async def handle_auth(message: types.Message):
@@ -107,30 +174,8 @@ async def handle_auth(message: types.Message):
     user_data = load_user_data()
     if user_id in user_data:
         try:
-            session = requests.Session()
-            login_page = session.get(login_url)
-            soup = BeautifulSoup(login_page.content, 'html.parser')
-            logintoken = soup.find('input', {'name': 'logintoken'})['value']
-
-            payload = {
-                'username': user_data[user_id]['username'],
-                'password': user_data[user_id]['password'],
-                'logintoken': logintoken
-            }
-
-            response = session.post(login_url, data=payload)
-            if "Выход" in response.text:
-                user_sessions[user_id] = {
-                    "username": user_data[user_id]['username'],
-                    "password": user_data[user_id]['password'],
-                    "payload": payload,
-                    "session": session,
-                    "keyboard": [back_button, my_courses_button, new_course_registration_button]
-                }
-                await message.answer("✅ Авторизация успешна!")
-                await show_main_menu(message)
-            else:
-                await message.answer("❌ Ошибка авторизации. Проверьте данные.")
+            await message.reply("Данные найдены. Авторизуюсь на сайте...")
+            await authenticate_user(message, user_data)
         except Exception as e:
             await message.answer(f"⚠️ Ошибка: {str(e)}")
     else:
@@ -180,6 +225,10 @@ async def handle_my_courses(message: types.Message, state: FSMContext):
 @router.message(CourseParsingForm.waiting_course_selection)
 async def process_course_selection(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
+    if message.lower() == 'назад':
+        await show_main_menu(message)
+        await state.clear()
+        return
     try:
         data = await state.get_data()
         course_order = data.get("course_order", [])
