@@ -40,7 +40,7 @@ def load_user_data():
 
 def save_user_data(data):
     with open(JSON_FILE, 'w') as file:
-        json.dump(data, file, indent=2)
+        json.dump(data, file)
 
 def paginate_text(content):
     chars_per_page = 4000
@@ -127,9 +127,9 @@ async def authenticate_user(message: types.Message, user_data):
             "keyboard": [back_button, my_courses_button, new_course_registration_button]
         })
         if user_id not in load_user_data():
-            user_data[user_id] = {'username': user_sessions[user_id]["username"],
-                              'password': user_sessions[user_id]["password"]}
-            save_user_data(user_data)
+            data = load_user_data()
+            data[user_id] = {"username":user_data[user_id]['username'], "password" : user_data[user_id]['password']}
+            save_user_data(data)
         await message.answer("✅ Авторизация успешна!")
         await show_main_menu(message)
     else:
@@ -163,9 +163,11 @@ async def get_username(message: types.Message, state: FSMContext):
 async def get_password(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
     user_sessions[user_id]["password"] = message.text
+    user_data = dict()
+    user_data[user_id] = {"username" :user_sessions[user_id]["username"], "password" : user_sessions[user_id]["password"]}
     await message.reply("Спасибо! Авторизуюсь на сайте...")
     await state.clear()
-    await authenticate_user(message, user_sessions)
+    await authenticate_user(message, user_data)
 
 
 @router.message(lambda message: message.text == 'Авторизация по данным')
@@ -225,10 +227,6 @@ async def handle_my_courses(message: types.Message, state: FSMContext):
 @router.message(CourseParsingForm.waiting_course_selection)
 async def process_course_selection(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
-    if message.lower() == 'назад':
-        await show_main_menu(message)
-        await state.clear()
-        return
     try:
         data = await state.get_data()
         course_order = data.get("course_order", [])
