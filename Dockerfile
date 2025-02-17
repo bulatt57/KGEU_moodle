@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Установим необходимые библиотеки Python
-RUN pip install --no-cache-dir aiogram requests beautifulsoup4 lxml
+RUN pip install --no-cache-dir aiogram requests beautifulsoup4 lxml cryptography
 
 # Клонируем ваш репозиторий через HTTPS
 RUN git clone https://github.com/bulatt57/KGEU_moodle.git /app

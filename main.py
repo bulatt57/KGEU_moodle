@@ -11,9 +11,14 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from special_parsing_class import DualKeyDict
 import asyncio
+from cryptography.fernet import Fernet
+import os
+
 
 API_TOKEN = '7865333406:AAH24rbw85Y4qmCSrsGGNlEkfP5cRFN5ZmI'
 JSON_FILE = 'user_data.json'
+key = os.getenv("ENCRYPTION_KEY").encode()
+cipher = Fernet(key)
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
@@ -64,6 +69,14 @@ def get_pagination_keyboard(current_page, total_pages):
         keyboard.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"page:{current_page + 1}"))
     return InlineKeyboardMarkup(inline_keyboard=[keyboard])
 
+# Функция для шифрования пароля
+def encrypt_password(password: str) -> str:
+    return cipher.encrypt(password.encode()).decode()
+
+# Функция для расшифрования пароля
+def decrypt_password(encrypted_password: str) -> str:
+    return cipher.decrypt(encrypted_password.encode()).decode()
+
 class CourseFindForm(StatesGroup):
     waiting_for_course_name_to_find = State()
 
@@ -107,28 +120,23 @@ async def authenticate_user(message: types.Message, user_data):
         'password': user_data[user_id]['password'],
         'logintoken': logintoken
     }
-    # Данные авторизации
-    user_sessions[user_id]["payload"] = {
-        'username': user_sessions[user_id]["username"],
-        'password': user_sessions[user_id]["password"],
-        'logintoken': logintoken,
-    }
 
     # Авторизация
     response = session.post(login_url, data=payload)
 
     # Проверка авторизации
     if "Выход" in response.text:
-        user_sessions[user_id].update( {
+        user_sessions[user_id] = {
             "username": user_data[user_id]['username'],
             "password": user_data[user_id]['password'],
             "payload": payload,
             "session": session,
             "keyboard": [back_button, my_courses_button, new_course_registration_button]
-        })
+        }
         if user_id not in load_user_data():
             data = load_user_data()
-            data[user_id] = {"username":user_data[user_id]['username'], "password" : user_data[user_id]['password']}
+            data[user_id] = {"username" : encrypt_password(user_data[user_id]['username']),
+                             "password" : encrypt_password(user_data[user_id]['password'])}
             save_user_data(data)
         await message.answer("✅ Авторизация успешна!")
         await show_main_menu(message)
@@ -164,7 +172,7 @@ async def get_password(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
     user_sessions[user_id]["password"] = message.text
     user_data = dict()
-    user_data[user_id] = {"username" :user_sessions[user_id]["username"], "password" : user_sessions[user_id]["password"]}
+    user_data[user_id] = {"username" : user_sessions[user_id]["username"], "password" : user_sessions[user_id]["password"]}
     await message.reply("Спасибо! Авторизуюсь на сайте...")
     await state.clear()
     await authenticate_user(message, user_data)
@@ -175,11 +183,13 @@ async def handle_auth(message: types.Message):
     user_id = str(message.from_user.id)
     user_data = load_user_data()
     if user_id in user_data:
-        try:
+        # try:
+            user_data[user_id]["username"] = decrypt_password(user_data[user_id]["username"])
+            user_data[user_id]["password"] = decrypt_password(user_data[user_id]["password"])
             await message.reply("Данные найдены. Авторизуюсь на сайте...")
             await authenticate_user(message, user_data)
-        except Exception as e:
-            await message.answer(f"⚠️ Ошибка: {str(e)}")
+        # except Exception as e:
+        #     await message.answer(f"⚠️ Ошибка: {str(e)}")
     else:
         await message.answer("🔍 Данные для авторизации не найдены.")
 
