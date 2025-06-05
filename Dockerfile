@@ -1,21 +1,29 @@
-# Используем официальный образ Python
-FROM python:3.9-slim
+# Use official Python image
+FROM python:3.10-slim
 
-# Установим зависимости для работы с Git и другими инструментами
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install system dependencies and Python packages
 RUN apt-get update && apt-get install -y \
     git \
     ca-certificates \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir -r requirements.txt
 
-# Установим необходимые библиотеки Python
-RUN pip install --no-cache-dir aiogram requests beautifulsoup4 lxml cryptography
+# Copy the application code
+COPY . .
 
-# Клонируем ваш репозиторий через HTTPS
-RUN git clone https://github.com/bulatt57/KGEU_moodle.git /app
+# Create directory for logs
+RUN mkdir -p /app/logs
 
-# Укажем рабочую директорию
-WORKDIR /app
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 
-# Укажем команду для запуска бота
-CMD ["python", "main.py"]
+# Run the bot using daemon.py
+CMD ["python", "daemon.py"]
